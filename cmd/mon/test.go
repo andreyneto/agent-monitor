@@ -14,6 +14,7 @@ func runTest(args []string) int {
 		{Session: "s3", Project: "lumina", Cwd: "/x/lumina", Kind: KindDone, Time: now.Add(-3 * time.Minute)},
 		{Session: "s4", Project: "copa", Cwd: "/x/copa", Kind: KindWorking, Time: now.Add(-10 * time.Second)},
 		{Session: "s5", Project: "monitor", Cwd: "/x/monitor", Kind: KindStart, Time: now.Add(-30 * time.Second)},
+		{Session: "s6", Project: "lullari", Cwd: "/x/lullari", Kind: KindBackground, BgTasks: []string{"Boot Android Pixel_10_Pro emulator", "iOS sim build"}, Time: now.Add(-90 * time.Second)},
 	}
 	for _, e := range samples {
 		e.Source = "test"

@@ -18,11 +18,40 @@ type hookPayload struct {
 	HookEventName  string `json:"hook_event_name"`
 	Message        string `json:"message"`
 	TranscriptPath string `json:"transcript_path"`
+	// nome/entrada da ferramenta (PostToolUse/PreToolUse)
+	ToolName  string          `json:"tool_name"`
+	ToolInput json.RawMessage `json:"tool_input"`
+	// tarefas em background rodando (Stop/SubagentStop carregam essa lista)
+	BackgroundTasks []bgTask `json:"background_tasks"`
 	// permite empurrar evento manualmente com kind/título explícito
 	Kind    string `json:"kind"`
 	Project string `json:"project"`
 	Source  string `json:"source"`
 	Title   string `json:"title"`
+}
+
+// bgTask espelha uma tarefa em background do payload (Stop/SubagentStop):
+// shell rodando, subagente, etc. Só usamos status e descrição.
+type bgTask struct {
+	Status      string `json:"status"`
+	Description string `json:"description"`
+}
+
+// runningBgTasks devolve as descrições das tarefas em background que ainda
+// estão rodando (status "running").
+func runningBgTasks(tasks []bgTask) []string {
+	var out []string
+	for _, t := range tasks {
+		if t.Status != "running" {
+			continue
+		}
+		d := t.Description
+		if d == "" {
+			d = "tarefa em background"
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // mapHookKind traduz o nome do evento do Claude para o nosso Kind.
@@ -72,6 +101,27 @@ func runEmit(args []string) int {
 		}
 		kind = KindWorking
 	}
+	// Background: Stop/SubagentStop trazem a lista de tarefas rodando. Quando a
+	// sessão termina de responder mas ainda tem shell/subagente em background,
+	// ela entra em "background" em vez de "done" — senão parece ociosa à toa.
+	bg := runningBgTasks(p.BackgroundTasks)
+	switch p.HookEventName {
+	case "Stop":
+		if len(bg) > 0 {
+			kind = KindBackground // (mapHookKind já deu "done"; sobe pra background)
+		}
+	case "SubagentStop":
+		// Um subagente/tarefa terminou. Só mexe se a sessão já está ociosa
+		// (done/background) — se ainda está trabalhando/attention, não interfere.
+		// Atualiza a contagem: volta pra "done" quando a última tarefa acaba.
+		if lk := lastKindForSession(p.SessionID); lk == KindDone || lk == KindBackground {
+			if len(bg) > 0 {
+				kind = KindBackground
+			} else {
+				kind = KindDone
+			}
+		}
+	}
 	if kind == "" {
 		// evento que não mapeia p/ nada útil: ignora silenciosamente
 		return 0
@@ -95,6 +145,10 @@ func runEmit(args []string) int {
 		title = extractTitle(p.TranscriptPath)
 	}
 
+	var bgTasks []string
+	if kind == KindBackground {
+		bgTasks = bg
+	}
 	e := Event{
 		Time:    time.Now(),
 		Source:  source,
@@ -104,6 +158,7 @@ func runEmit(args []string) int {
 		Kind:    kind,
 		Message: p.Message,
 		Title:   title,
+		BgTasks: bgTasks,
 	}
 	_ = appendEvent(e) // falha de gravação não deve travar o hook
 	return 0

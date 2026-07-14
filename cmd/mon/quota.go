@@ -103,7 +103,15 @@ func pct(v any) float64 {
 	case float64:
 		return scale(t)
 	case map[string]any:
-		for _, k := range []string{"used_percentage", "utilization", "used_pct", "percent", "used", "usage"} {
+		// chaves que JÁ vêm em 0..100: usa direto, sem a heurística de fração —
+		// senão used_percentage:1 (1% usado) viraria 100%.
+		for _, k := range []string{"used_percentage", "used_pct", "percent"} {
+			if n, ok := t[k].(float64); ok {
+				return clampPct(n)
+			}
+		}
+		// chaves ambíguas: podem vir como fração 0..1 (ex.: utilization:0.62)
+		for _, k := range []string{"utilization", "used", "usage"} {
 			if n, ok := t[k].(float64); ok {
 				return scale(n)
 			}
@@ -112,10 +120,16 @@ func pct(v any) float64 {
 	return -1
 }
 
+// scale normaliza um número ambíguo: valores ≤ 1 são tratados como fração 0..1.
 func scale(n float64) float64 {
 	if n <= 1.0 { // veio como fração 0..1
 		n *= 100
 	}
+	return clampPct(n)
+}
+
+// clampPct prende o percentual em 0..100 (negativo = desconhecido).
+func clampPct(n float64) float64 {
 	if n < 0 {
 		return -1
 	}

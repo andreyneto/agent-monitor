@@ -48,6 +48,28 @@ func TestQuotaParse(t *testing.T) {
 	}
 }
 
+// TestQuotaUsedPercentage: used_percentage já vem em 0..100 e NÃO pode passar
+// pela heurística de fração — senão 1% (≈ vazio) apareceria como 100%.
+func TestQuotaUsedPercentage(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("MON_DIR", dir)
+	defer os.Unsetenv("MON_DIR")
+
+	raw := `{"time":"2026-07-14T08:00:00-03:00","raw":{
+		"five_hour":{"used_percentage":1,"resets_at":1784045400},
+		"seven_day":{"used_percentage":13,"resets_at":1784487600}}}`
+	if err := os.WriteFile(filepath.Join(dir, "quota.json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := readQuota()
+	if q.FiveHour != 1 {
+		t.Errorf("five_hour: esperava 1%%, veio %v (heurística de fração vazou?)", q.FiveHour)
+	}
+	if q.SevenDay != 13 {
+		t.Errorf("seven_day: esperava 13%%, veio %v", q.SevenDay)
+	}
+}
+
 func TestViewHeight(t *testing.T) {
 	m := newModel()
 	m.width, m.height = 48, 18

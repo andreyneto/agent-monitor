@@ -239,12 +239,21 @@ func (m model) cardLines(s *Session, outer, outerH int) []string {
 	if subtitle == "" {
 		subtitle = "#" + shortID(s.ID)
 	}
+	if s.Kind == KindBackground {
+		if bs := bgSummary(s); bs != "" {
+			subtitle = bs
+		}
+	}
 	ago := agoLabel(s.LastSeen, m.now)
 
 	// "precisa de você": o card INTEIRO pisca (fundo vermelho ↔ contorno), como
 	// a linha no modo lista — a borda sozinha não chamava atenção suficiente.
 	if s.Kind == KindAttention {
 		return m.alarmCardLines(s, subtitle, ago, outer, outerH)
+	}
+	// aviso de "pronto": card inteiro em ciano na fase acesa (pisca por frames)
+	if n := m.doneFlash[s.ID]; n > 0 && m.doneFlashOn(n) {
+		return m.doneFlashCardLines(s, subtitle, ago, outer, outerH)
 	}
 
 	var icon, label string
@@ -255,6 +264,9 @@ func (m model) cardLines(s *Session, outer, outerH int) []string {
 	case KindWorking:
 		icon = m.spin.View()
 		label, style = "trabalhando", stWorking
+	case KindBackground:
+		icon = m.spin.View()
+		label, style = "em background", stBack
 	case KindDone:
 		icon, label, style = "✓", "pronto", stDone
 	case KindStart:
@@ -334,21 +346,57 @@ func (m model) alarmCardLines(s *Session, subtitle, ago string, outer, outerH in
 	return padCardWidth(strings.Split(box, "\n"), outer, outerH)
 }
 
+// doneFlashCardLines desenha o card de "pronto" aceso (ciano cheio, texto
+// escuro) — a fase "acesa" do aviso que pisca por doneFlashFrames.
+func (m model) doneFlashCardLines(s *Session, subtitle, ago string, outer, outerH int) []string {
+	innerW := outer - 2
+	tw := innerW - 2
+	if tw < 4 {
+		tw = 4
+	}
+	projMax := tw - 2 - lipgloss.Width(ago) - 1
+	if projMax < 3 {
+		projMax = 3
+	}
+	head := "✓ " + trunc(s.Project, projMax)
+	l1 := " " + spread(head, ago, tw) + " "
+	l2 := " " + padRight("pronto", tw) + " "
+	l3 := " " + padRight(trunc(subtitle, tw), tw) + " "
+	content := stDoneFlash.Render(l1) + "\n" + stDoneFlash.Render(l2) + "\n" + stDoneFlash.Render(l3)
+
+	bs := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Width(innerW).
+		Height(cardH).
+		BorderForeground(lipgloss.Color("51")).BorderBackground(lipgloss.Color("51"))
+	box := bs.Render(content)
+	return padCardWidth(strings.Split(box, "\n"), outer, outerH)
+}
+
 // renderFullCard usa a tela toda pra uma única sessão — versão "detalhada".
 func (m model) renderFullCard(s *Session, w, bodyH int) []string {
 	subtitle := s.Title
 	if subtitle == "" {
 		subtitle = "#" + shortID(s.ID)
 	}
+	if s.Kind == KindBackground {
+		if bs := bgSummary(s); bs != "" {
+			subtitle = bs
+		}
+	}
 	var icon, label string
 	var style lipgloss.Style
 	attention := s.Kind == KindAttention
+	flash := !attention && m.doneFlash[s.ID] > 0 && m.doneFlashOn(m.doneFlash[s.ID])
 	switch s.Kind {
 	case KindAttention:
 		icon, label, style = "▲", "PRECISA DE VOCÊ", stAtten
 	case KindWorking:
 		icon = m.spin.View()
 		label, style = "trabalhando", stWorking
+	case KindBackground:
+		icon = m.spin.View()
+		label, style = "em background", stBack
 	case KindDone:
 		icon, label, style = "✓", "pronto", stDone
 	case KindStart:
@@ -376,6 +424,13 @@ func (m model) renderFullCard(s *Session, w, bodyH int) []string {
 	if attention {
 		// texto puro: a cor vem do estilo do card inteiro (que pisca)
 		inner = []string{"▲  " + trunc(s.Project, tw-4), "", "PRECISA DE VOCÊ", "", trunc(subtitle, tw)}
+		if s.Message != "" && s.Message != subtitle {
+			inner = append(inner, "", trunc(s.Message, tw))
+		}
+		inner = append(inner, "", footer)
+	} else if flash {
+		// texto puro: a cor vem do estilo do card inteiro (pulso ciano)
+		inner = []string{"✓  " + trunc(s.Project, tw-4), "", "PRONTO", "", trunc(subtitle, tw)}
 		if s.Message != "" && s.Message != subtitle {
 			inner = append(inner, "", trunc(s.Message, tw))
 		}
@@ -414,6 +469,11 @@ func (m model) renderFullCard(s *Session, w, bodyH int) []string {
 		// frame "apagado": contorno + texto vermelhos sobre fundo padrão
 		boxStyle = boxStyle.Bold(true).
 			Foreground(lipgloss.Color("196")).BorderForeground(lipgloss.Color("196"))
+	case flash:
+		// pulso de "pronto": card inteiro ciano, texto escuro
+		boxStyle = boxStyle.Bold(true).
+			Foreground(lipgloss.Color("16")).Background(lipgloss.Color("51")).
+			BorderForeground(lipgloss.Color("51")).BorderBackground(lipgloss.Color("51"))
 	default:
 		boxStyle = boxStyle.BorderForeground(sessionColor(s.ID))
 	}
@@ -512,6 +572,10 @@ func (m model) renderStats(w, bodyH int) []string {
 	heatLead := strings.Repeat(" ", max0(w-2-blockW))
 
 	var rows []string
+	// nota de defasagem no topo (sempre visível): o cache só recomputa no /usage
+	if note := u.staleNote(m.now); note != "" {
+		rows = append(rows, center(stDim.Render(note), w), "")
+	}
 	for _, ln := range heat {
 		rows = append(rows, heatLead+ln)
 	}

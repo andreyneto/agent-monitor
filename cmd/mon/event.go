@@ -19,11 +19,12 @@ func isIdleWaiting(msg string) bool {
 type Kind string
 
 const (
-	KindStart     Kind = "start"     // sessão iniciou
-	KindWorking   Kind = "working"   // recebeu um prompt / está trabalhando
-	KindAttention Kind = "attention" // PRECISA de você (permissão / input)
-	KindDone      Kind = "done"      // terminou de responder, esperando você
-	KindEnd       Kind = "end"       // sessão encerrada
+	KindStart      Kind = "start"      // sessão iniciou
+	KindWorking    Kind = "working"    // recebeu um prompt / está trabalhando
+	KindAttention  Kind = "attention"  // PRECISA de você (permissão / input)
+	KindBackground Kind = "background" // respondeu, mas tem tarefa rodando em background
+	KindDone       Kind = "done"       // terminou de responder, esperando você
+	KindEnd        Kind = "end"        // sessão encerrada
 )
 
 // Event é uma linha do events.jsonl. Qualquer ferramenta pode empurrar um
@@ -36,7 +37,8 @@ type Event struct {
 	Cwd     string    `json:"cwd"`
 	Kind    Kind      `json:"kind"`
 	Message string    `json:"message"`
-	Title   string    `json:"title,omitempty"` // aiTitle da sessão, quando já existe
+	Title   string    `json:"title,omitempty"`    // aiTitle da sessão, quando já existe
+	BgTasks []string  `json:"bg_tasks,omitempty"` // descrições das tarefas em background rodando
 }
 
 // monDir é onde vivem os eventos. Override com MON_DIR.
@@ -177,6 +179,7 @@ type Session struct {
 	Kind     Kind
 	Message  string
 	Title    string
+	BgTasks  []string // tarefas em background rodando (quando Kind == background)
 	LastSeen time.Time
 }
 
@@ -206,6 +209,7 @@ func deriveSessions(events []Event) map[string]*Session {
 		s.Cwd = e.Cwd
 		s.Kind = e.Kind
 		s.Message = e.Message
+		s.BgTasks = e.BgTasks // some quando o próximo evento não é background
 		s.LastSeen = e.Time
 		if e.Title != "" { // título é "sticky": nem todo evento carrega
 			s.Title = e.Title

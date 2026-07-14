@@ -15,6 +15,7 @@ type Config struct {
 	StaleMinutes  int    `json:"stale_minutes"`  // sessão ociosa some depois de N min
 	ShowQuota     bool   `json:"show_quota"`     // mostrar barras de quota
 	Blink         bool   `json:"blink"`          // piscar linhas em alarme
+	AlertDone     bool   `json:"alert_done"`     // dar um flash quando a sessão fica "pronto"
 	Clock24h      bool   `json:"clock_24h"`      // relógio 24h (senão 12h)
 	Layout        string `json:"layout"`         // "list" | "grid" | "auto"
 	GridCols      int    `json:"grid_cols"`      // colunas no grid manual (1..6)
@@ -29,6 +30,7 @@ func defaultConfig() Config {
 		StaleMinutes: 45,
 		ShowQuota:    true,
 		Blink:        true,
+		AlertDone:    true,
 		Clock24h:     true,
 		Layout:       layoutAuto,
 		GridCols:     2,

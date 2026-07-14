@@ -26,9 +26,11 @@ var (
 	stAtten     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 	stAlarmOn   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("196"))
 	stAlarmOff  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
-	stQuotaOK   = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // laranja vivo (< 70%)
-	stQuotaWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // âmbar (70–90%)
+	stDoneFlash = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("51")) // flash "pronto": texto escuro sobre ciano
+	stQuotaOK   = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))                                            // laranja vivo (< 70%)
+	stQuotaWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))                                            // âmbar (70–90%)
 	stWorking   = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	stBack      = lipgloss.NewStyle().Foreground(lipgloss.Color("170")) // magenta: rodando em background
 	stDone      = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
 	stIdle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
@@ -58,6 +60,9 @@ type model struct {
 	height     int
 	frame      int             // contador de frames p/ o blink do alarme
 	rung       map[string]bool // sessões que já tocaram o alarme
+	seenKind   map[string]Kind // último Kind visto por sessão (detecta transição)
+	doneFlash  map[string]int  // sessão → frames restantes do flash de "pronto"
+	booted     bool            // já fez o 1º reload? (não pisca estado pré-existente)
 	quotaRung  bool            // já alarmou o bloqueio de quota?
 	cfg        Config
 	mode       viewMode
@@ -80,6 +85,23 @@ type model struct {
 
 func (m *model) setNotice(s string) { m.notice = s; m.noticeTTL = 20 }
 
+// doneFlashFrames é a duração do aviso de "pronto": ~6 frames de 150ms ≈ 0,9s.
+// Durante essa janela a linha/card PISCA (ver doneFlashOn) e depois assenta no
+// estado normal — chama o olhar sem ficar piscando pra sempre.
+const doneFlashFrames = 6
+
+// doneFlashOn diz se o aviso de "pronto" está na fase acesa. Pisca em cadência
+// de ~300ms (2 frames aceso / 2 apagado) ao longo dos doneFlashFrames, sempre
+// começando aceso. Respeita o toggle global de piscar: com Blink desligado,
+// fica sólido a janela toda.
+func (m model) doneFlashOn(remaining int) bool {
+	if !m.cfg.Blink {
+		return true
+	}
+	elapsed := doneFlashFrames - remaining // 0,1,2,… desde o disparo
+	return (elapsed/2)%2 == 0
+}
+
 type tickMsg time.Time
 
 func newModel() model {
@@ -89,15 +111,17 @@ func newModel() model {
 		filter = filterAttention
 	}
 	return model{
-		width:  48,
-		height: 18,
-		now:    time.Now(),
-		rung:   map[string]bool{},
-		cfg:    cfg,
-		filter: filter,
-		spin:   newSpinner(cfg.SpinnerStyle),
-		band5:  -1, // força construir as barras na 1ª animação
-		band7:  -1,
+		width:     48,
+		height:    18,
+		now:       time.Now(),
+		rung:      map[string]bool{},
+		seenKind:  map[string]Kind{},
+		doneFlash: map[string]int{},
+		cfg:       cfg,
+		filter:    filter,
+		spin:      newSpinner(cfg.SpinnerStyle),
+		band5:     -1, // força construir as barras na 1ª animação
+		band7:     -1,
 	}
 }
 
@@ -116,6 +140,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.now = time.Time(msg)
 		m.frame++
+		// consome os frames do flash de "pronto" (uma vez por tick)
+		for id, n := range m.doneFlash {
+			if n <= 1 {
+				delete(m.doneFlash, id)
+			} else {
+				m.doneFlash[id] = n - 1
+			}
+		}
 		if m.noticeTTL > 0 {
 			m.noticeTTL--
 			if m.noticeTTL == 0 {
@@ -301,17 +333,34 @@ func (m *model) reload() {
 		m.alarm()
 	}
 
+	// flash de "pronto": dá um pulso quando uma sessão ENTRA em done (transição),
+	// não a cada reload. No 1º reload só semeia o estado (não pisca o que já existe).
+	for id, s := range sessions {
+		if m.booted && m.cfg.AlertDone && s.Kind == KindDone && m.seenKind[id] != KindDone {
+			m.doneFlash[id] = doneFlashFrames
+		}
+		m.seenKind[id] = s.Kind
+	}
+	for id := range m.seenKind {
+		if sessions[id] == nil {
+			delete(m.seenKind, id)
+			delete(m.doneFlash, id)
+		}
+	}
+	m.booted = true
+
 	// filtra sessões velhas/limpas/filtradas e ordena por prioridade
 	stale := time.Duration(m.cfg.StaleMinutes) * time.Minute
 	var list []*Session
 	for _, s := range sessions {
-		// Só "working" fica imune ao tempo — uma tarefa longa pode ficar
-		// silenciosa (sem novos hooks) e não deve sumir. Todo o resto envelhece,
-		// INCLUSIVE "attention": quando você resolve a permissão fora da nossa
-		// visão (id da sessão muda, Claude fecha sem Stop, ferramenta longa…),
-		// nenhum hook limpa o estado — então ela some depois de StaleMinutes.
-		// O alarme já tocou quando ela apareceu, então nada se perde.
-		agesOut := s.Kind != KindWorking
+		// "working" e "background" ficam imunes ao tempo: representam trabalho
+		// ativo (o Claude respondendo, ou um shell/subagente ainda rodando) e não
+		// devem sumir só por ficarem silenciosos. Todo o resto envelhece, INCLUSIVE
+		// "attention": quando você resolve a permissão fora da nossa visão (id da
+		// sessão muda, Claude fecha sem Stop, ferramenta longa…), nenhum hook limpa
+		// o estado — então some depois de StaleMinutes. O alarme já tocou quando
+		// ela apareceu, então nada se perde.
+		agesOut := s.Kind != KindWorking && s.Kind != KindBackground
 		if agesOut && m.now.Sub(s.LastSeen) > stale {
 			continue // muito antiga
 		}
@@ -344,10 +393,12 @@ func pr(k Kind) int {
 		return 0
 	case KindWorking:
 		return 1
-	case KindDone:
+	case KindBackground:
 		return 2
-	default:
+	case KindDone:
 		return 3
+	default:
+		return 4
 	}
 }
 
@@ -421,17 +472,41 @@ func (m model) blink() bool {
 	return (m.frame/3)%2 == 0
 }
 
+// bgSummary resume as tarefas em background de uma sessão pro subtítulo:
+// "2 tarefas · Boot Android emulator".
+func bgSummary(s *Session) string {
+	n := len(s.BgTasks)
+	if n == 0 {
+		return ""
+	}
+	noun := "tarefa"
+	if n > 1 {
+		noun = "tarefas"
+	}
+	return fmt.Sprintf("%d %s · %s", n, noun, s.BgTasks[0])
+}
+
 func (m model) renderRow(s *Session, w int) string {
 	// texto do subtítulo (linha 2): título da sessão ou fallback #hash
 	subtitle := s.Title
 	if subtitle == "" {
 		subtitle = "#" + shortID(s.ID)
 	}
+	// em background: o subtítulo mostra o que está rodando
+	if s.Kind == KindBackground {
+		if bs := bgSummary(s); bs != "" {
+			subtitle = bs
+		}
+	}
 
 	// "precisa de você": linha inteira PISCA (barra vermelha) — sem depender
 	// de cor só, e sem trocar a largura de nenhum char (fim do chacoalho).
 	if s.Kind == KindAttention {
 		return m.renderAlarmRow(s, subtitle, w)
+	}
+	// aviso de "pronto": pisca ciano cheio na fase acesa; na apagada cai no normal
+	if n := m.doneFlash[s.ID]; n > 0 && m.doneFlashOn(n) {
+		return m.renderDoneFlashRow(s, subtitle, w)
 	}
 
 	var icon, label string
@@ -440,6 +515,9 @@ func (m model) renderRow(s *Session, w int) string {
 	case KindWorking:
 		icon = m.spin.View()
 		label, style = "trabalhando", stWorking
+	case KindBackground:
+		icon = m.spin.View()
+		label, style = "em background", stBack
 	case KindDone:
 		icon, label, style = "✓", "pronto", stDone
 	case KindStart:
@@ -498,6 +576,22 @@ func (m model) renderAlarmRow(s *Session, subtitle string, w int) string {
 		st = stAlarmOff // vermelho sobre fundo padrão
 	}
 	return st.Render(line1) + "\n" + st.Render(line2)
+}
+
+// renderDoneFlashRow desenha a linha de "pronto" acesa (ciano cheio, texto
+// escuro) — mesmo formato da linha de alarme. É a fase "acesa" do aviso que
+// pisca por doneFlashFrames e depois assenta na linha normal.
+func (m model) renderDoneFlashRow(s *Session, subtitle string, w int) string {
+	label := "pronto"
+	icon := "✓"
+	projMax := w - 3 - lipgloss.Width(label) - 2
+	if projMax < 6 {
+		projMax = 6
+	}
+	left := " " + icon + " " + trunc(s.Project, projMax)
+	line1 := padRight(spread(left, label+" ", w), w)
+	line2 := padRight("   "+trunc(subtitle, w-4), w)
+	return stDoneFlash.Render(line1) + "\n" + stDoneFlash.Render(line2)
 }
 
 // shortID devolve os primeiros 8 caracteres do id (antes do primeiro '-').
@@ -653,6 +747,7 @@ var settingItems = []settingItem{
 	}},
 	{"Som do alarme", func(c Config) string { return onOff(c.Sound) }, func(c *Config, d int) { c.Sound = !c.Sound }},
 	{"Piscar alarme", func(c Config) string { return onOff(c.Blink) }, func(c *Config, d int) { c.Blink = !c.Blink }},
+	{"Aviso de pronto", func(c Config) string { return onOff(c.AlertDone) }, func(c *Config, d int) { c.AlertDone = !c.AlertDone }},
 	{"Mostrar quota", func(c Config) string { return onOff(c.ShowQuota) }, func(c *Config, d int) { c.ShowQuota = !c.ShowQuota }},
 	{"Relógio 24h", func(c Config) string { return onOff(c.Clock24h) }, func(c *Config, d int) { c.Clock24h = !c.Clock24h }},
 	{"Sumir ociosa (min)", func(c Config) string { return fmt.Sprintf("%d", c.StaleMinutes) }, func(c *Config, d int) {

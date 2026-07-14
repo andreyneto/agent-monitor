@@ -14,6 +14,7 @@ var hookEvents = []string{
 	"UserPromptSubmit",
 	"Notification",
 	"PostToolUse",
+	"SubagentStop",
 	"Stop",
 	"SessionEnd",
 }

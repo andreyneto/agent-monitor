@@ -2,10 +2,29 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/mattn/go-runewidth"
 )
+
+// TestStaleNote: a nota aparece quando o cache é de um dia anterior a "hoje" e
+// sane quando é do próprio dia (ou inexistente).
+func TestStaleNote(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.Local)
+
+	if n := (Usage{}).staleNote(now); n != "" {
+		t.Errorf("sem LastComputed não deveria ter nota, veio %q", n)
+	}
+	fresh := Usage{LastComputed: time.Date(2026, 7, 14, 6, 0, 0, 0, time.Local)}
+	if n := fresh.staleNote(now); n != "" {
+		t.Errorf("cache de hoje não deveria ter nota, veio %q", n)
+	}
+	stale := Usage{LastComputed: time.Date(2026, 7, 5, 0, 0, 0, 0, time.Local)}
+	if n := stale.staleNote(now); n == "" {
+		t.Error("cache de 9 dias atrás deveria ter nota de defasagem")
+	}
+}
 
 func TestGroupInt(t *testing.T) {
 	cases := map[int]string{0: "0", 42: "42", 1000: "1.000", 43026: "43.026", 10465: "10.465", -1234: "-1.234"}

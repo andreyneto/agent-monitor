@@ -28,6 +28,7 @@ type Usage struct {
 	Favorite      string         // modelo mais usado, já encurtado ("opus 4.8")
 	LongestMs     int64          // duração da sessão mais longa (ms)
 	FirstSession  time.Time      // primeira sessão registrada
+	LastComputed  time.Time      // até quando o Claude computou o cache (/usage)
 	Daily         map[string]int // data (YYYY-MM-DD) → mensagens no dia
 }
 
@@ -42,6 +43,7 @@ type rawStats struct {
 		OutputTokens int `json:"outputTokens"`
 	} `json:"modelUsage"`
 	TotalSessions    int    `json:"totalSessions"`
+	LastComputedDate string `json:"lastComputedDate"`
 	FirstSessionDate string `json:"firstSessionDate"`
 	LongestSession   struct {
 		Duration int64 `json:"duration"` // milissegundos
@@ -82,6 +84,10 @@ func parseUsage() Usage {
 	}
 	if t, err := time.Parse(time.RFC3339, r.FirstSessionDate); err == nil {
 		u.FirstSession = t
+	}
+	// data-só (sem fuso): parseia em local pra não escorregar 1 dia ao exibir
+	if t, err := time.ParseInLocation("2006-01-02", r.LastComputedDate, time.Local); err == nil {
+		u.LastComputed = t
 	}
 	// modelo favorito + total de tokens (input+output)
 	bestTok := -1
@@ -159,6 +165,20 @@ func (u Usage) derive(now time.Time) derived {
 		cur = cur.AddDate(0, 0, -1)
 	}
 	return d
+}
+
+// staleNote avisa que o overview sai do cache do Claude Code (o mesmo do
+// /usage), que só recomputa quando você abre o /usage. Devolve "" se o cache
+// já é de hoje. Assim os números batem exatamente com o /usage, e a nota deixa
+// explícito quando estão velhos.
+func (u Usage) staleNote(now time.Time) string {
+	if u.LastComputed.IsZero() {
+		return ""
+	}
+	if !dateOnly(u.LastComputed).Before(dateOnly(now)) {
+		return "" // computado hoje: fresco
+	}
+	return "dados até " + dateShort(u.LastComputed) + " · abra /usage"
 }
 
 func dateOnly(t time.Time) time.Time {
